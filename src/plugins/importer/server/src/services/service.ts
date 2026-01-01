@@ -26,6 +26,7 @@ const service = ({ strapi }: { strapi: Core.Strapi }) => ({
     const sheet = workbook.Sheets[workbook.SheetNames[0]]
     const rows = XLSX.utils.sheet_to_json(sheet)
 
+    // Cargar categorías existentes
     const categories = await strapi.documents('api::category.category').findMany({
       fields: ['name', 'slug', 'documentId'],
     })
@@ -59,18 +60,19 @@ const service = ({ strapi }: { strapi: Core.Strapi }) => ({
           .map((slug: string) => bySlug.get(slug))
           .filter(Boolean)
 
-        const categoryConnections = categoryDocs.map((c: any) => ({ id: c.documentId }))
-
-        const productData = {
+        // Datos del producto (sin categorías; esa relación se setea desde category)
+        // Nota: usamos any porque los tipos generados de Strapi no incluyen
+        // esta relación inversa en el input; evitamos errores de compilación.
+        const productData: any = {
           name,
           slug,
           price,
           stock: stock ?? 0,
           brand: brand ?? '',
           active,
-          categories: { connect: categoryConnections },
         }
 
+        // Buscar si existe el producto
         const existingProducts = await strapi.documents('api::product.product').findMany({
           filters: { slug: { $eq: slug } },
           limit: 1,
@@ -83,23 +85,31 @@ const service = ({ strapi }: { strapi: Core.Strapi }) => ({
           const existingProduct = existingProducts[0]
           result = await strapi.documents('api::product.product').update({
             documentId: existingProduct.documentId,
-            data: {
-              ...productData,
-              categories: { set: categoryConnections },
-            },
+            data: productData as any,
           })
           action = 'updated'
           updated.push({ row: i + 2, id: result.documentId, name, slug })
         } else {
           result = await strapi.documents('api::product.product').create({
-            data: productData,
+            data: productData as any,
           })
           action = 'created'
         }
 
+        // Publicar el producto
         await strapi.documents('api::product.product').publish({
           documentId: result.documentId,
         })
+
+        // Asociar categorías desde su lado (manyToOne en category)
+        await Promise.all(
+          categoryDocs.map((c: any) =>
+            strapi.documents('api::category.category').update({
+              documentId: c.documentId,
+              data: { product: { connect: { id: result.documentId } } } as any,
+            })
+          )
+        )
 
         imported.push({ row: i + 2, id: result.documentId, name, slug, action })
       } catch (e: any) {
